@@ -1,8 +1,11 @@
 from math import sqrt, ceil, gcd, lcm
-import primefac
+from primefac import primefac
 from functools import reduce
-from typing import TypeVar, Iterable
+from typing import TypeVar, Iterable, Optional, Iterator
 from random import randint
+from itertools import combinations
+import dataclasses
+
 
 def is_in_mult_group(elem: int, modulo: int) -> bool:
     ' ' ' check that integer `elem` is in the multiplicative group of integers modulo `modulo` e.g. (Z_`modulo`)* ' ' '
@@ -24,8 +27,8 @@ def count_freq(input: list[T]) -> list[tuple[T, int]]:
     Returns:
         frequencies: list of frequencies of elements.
     '''
-    encountered = []
-    freqs = []
+    encountered: list[T] = []
+    freqs: list[tuple[T, int]] = []
     for c in input:
         if c in encountered:
             continue
@@ -34,7 +37,9 @@ def count_freq(input: list[T]) -> list[tuple[T, int]]:
         freqs.append((c, freq))
     return freqs
 
-def get_factors(n: int) -> list[tuple[int, int]]:
+Factors = list[tuple[int, int]]
+
+def get_factors(n: int) -> Factors:
     '''
     Get factors of `n` in the form `[(p1, e1), (p2, e2)...]` for which `n = p1**e1 * p2**e2 * ...`
 
@@ -43,7 +48,7 @@ def get_factors(n: int) -> list[tuple[int, int]]:
     >>> get_factors(3*5*5*5)
     [(3, 1), (5, 3)]
     '''
-    factors = count_freq(list(primefac.primefac(n)))
+    factors: Factors = count_freq(list(primefac(n)))
     return sorted(factors, key=lambda t: t[0])
 
 
@@ -63,7 +68,7 @@ def get_random_elem_in_mult_group(modulo: int) -> int:
         guess = randint(a, b)
     return guess
 
-def euler_phi(n: int, factors: list[tuple[int, int]] | None = None) -> int:
+def euler_phi(n: int, factors: Optional[Factors]  = None) -> int:
     '''
     Calculate the euler totient function of `n`. Function uses the factorization of `n` and if one has already computed them, one can input them to the optional argument `factors`.
 
@@ -74,10 +79,9 @@ def euler_phi(n: int, factors: list[tuple[int, int]] | None = None) -> int:
     '''
     if factors == None:
         factors = get_factors(n)
-    assert reduce(lambda a, b: a * pow(b[0], b[1]), factors, 1) == n
     return reduce(lambda a, b: a * (pow(b[0], b[1]) - pow(b[0], b[1]-1)), factors, 1) 
 
-def carmichael_lambda(n: int, factors: list[tuple[int, int]] | None = None) -> int:
+def carmichael_lambda(n: int, factors: Optional[Factors] = None) -> int:
     '''
     Calculates the carmichael lambda function of `n`. Function uses the factorization of `n` and if one has already computed them, one can input them to the optional argument `factors`. 
 
@@ -98,26 +102,38 @@ def carmichael_lambda(n: int, factors: list[tuple[int, int]] | None = None) -> i
         return 2**(factors[0][1] - 2)
     else:
         return lcm(*list(map(lambda x: carmichael_lambda(pow(x[0], x[1])), factors)))
-    
 
-def egcd(a: int,b: int) -> tuple[int, int, int]:
+@dataclasses.dataclass
+class EGCD:
+    """
+    Provides the result of `dlog.egcd`. This class contains `gcd`, `x`, `y` 
+    """
+    gcd: int
+    x: int
+    y: int
+
+    def __iter__(self) -> Iterator[int]:
+        return (self.gcd, self.x, self.y).__iter__()
+
+
+def egcd(a: int,b: int) -> EGCD:
     '''
     The extended euclidian algorithm which calculates the `x`, `y` and `gcd(a,b)` in equation `ax+by=gcd(a,b)`.
     
     >>> egcd(240, 46)
-    (2, -9, 47)
+    EGCD(gcd=2, x=-9, y=47)
     '''
     if b == 0:
-        return (a, 1, 0)
+        return EGCD(a, 1, 0)
     else:
         q = a // b
         r = a % b
-        d, x, y = egcd(b, r)
-        return d, y, x-q*y
+        d, x, y = egcd(b,r)
+        return EGCD(d,y,x-q*y)
 
-def mult_order_element(a: int, modulo: int) -> int:
+def mult_order_element_trial_muliplication(a: int, modulo: int) -> int:
     '''
-    Calculates the order of `a` in Z_`modulo` by "trial multiplication" aka. multiply an a by a until it is 1 and count how many times we multiplied.
+    Calculates the order of `a` in Z_`modulo`* by "trial multiplication" aka. multiply an a by a until it is 1 and count how many times we multiplied.
 
     >>> mult_order_element(8, 7**4)
     343
@@ -132,7 +148,46 @@ def mult_order_element(a: int, modulo: int) -> int:
         elem = (elem * a) % modulo
     return order
 
-def modulo_has_primitive_root(n: int, factors: list[tuple[int, int]] | None = None) -> bool:
+def mult_order_element(a: int, modulo: int, modulo_factors: Optional[Factors] = None, euler_phi_factors: Optional[Factors] = None) -> int:
+    '''
+    Calculates the order of `a` in Z_`modulo`* by lagranges theorem. From lagranges theorem we know that for every subgroup H of group G, the order of H divides the order of G. Knowing the divisors
+    of the order of G, which is in this case `euler_phi(modulo)`, we can check which is the smallest divisor that `a**d = 1 mod modulo` holds. 
+
+    If one gives `euler_phi_factors`, one does not need to give `modulo_factors` as it is only needed for calculating `euler_phi_factors`.
+
+    For large modulus this method might be faster than `mult_order_element_trial_multiplication` as it doesn't just count up.
+
+    >>> mult_order_element(8, 7**4)
+    343
+    >>> mult_order_element(4, 15)
+    2
+    '''
+    assert is_in_mult_group(a, modulo)
+    if euler_phi_factors == None:
+        if modulo_factors == None:
+            modulo_factors = get_factors(modulo)
+        euler_phi_factors = get_factors(euler_phi(modulo, factors = modulo_factors))
+    
+    expanded_factors: list[int] = []
+    for (p,e) in euler_phi_factors:
+        for _ in range(e):
+            expanded_factors.append(p)
+    
+    divisors: list[int] = []
+    for i in range(1, len(expanded_factors)):
+        for factors in combinations(expanded_factors, i):
+            divisors.append(reduce(int.__mul__, factors, 1))
+    divisors.sort()
+    
+    for divisor in divisors:
+        if pow(a, divisor, modulo) == 1:
+            return divisor
+    
+    order = reduce(int.__mul__, expanded_factors, 1)
+    assert pow(a, order, modulo) == 1
+    return order
+
+def modulo_has_primitive_root(n: int, factors: Optional[list[tuple[int, int]]]  = None) -> bool:
     '''
     Checks if a modulus `n` has a primitive root. This is true only when `n in [1,2,4,p**k, 2*p**k]` where `p in odd_primes`
 
@@ -154,7 +209,7 @@ def modulo_has_primitive_root(n: int, factors: list[tuple[int, int]] | None = No
     is_two_times_odd_prime_power = len(factors) == 2 and factors[0][0] == 2
     return is_small or is_odd_prime_power or is_two_times_odd_prime_power
 
-def is_primitive_mod_n(a: int, n: int, factors: list[tuple[int, int]] | None = None, euler_phi_factors: list[tuple[int, int]] | None = None) -> bool:
+def is_primitive_mod_n(a: int, n: int, modulo_factors: Optional[list[tuple[int, int]]] = None, euler_phi_factors: Optional[list[tuple[int, int]]] = None) -> bool:
     '''
     Checks if `a` is a primitive root modulo `n`. This is equivalent of saying that the order of `a` is the order of the group aka `euler_phi(n)`. This can only be true when `n in [1,2,4,p**k, 2*p**k]` where `p in odd_primes`. 
 
@@ -166,12 +221,16 @@ def is_primitive_mod_n(a: int, n: int, factors: list[tuple[int, int]] | None = N
     True
     '''
     assert is_in_mult_group(a,n)
-    if factors == None:
-        factors = get_factors(n)
-    if not modulo_has_primitive_root(n, factors):
+
+    if modulo_factors == None:
+        modulo_factors = get_factors(n)
+
+    if not modulo_has_primitive_root(n, modulo_factors):
         return False
-    factors_modulo = factors
+    
+    factors_modulo = modulo_factors
     order = euler_phi(n, factors_modulo)
+
     if euler_phi_factors == None:
         euler_phi_factors = get_factors(order)
     factors_order = euler_phi_factors
@@ -181,7 +240,7 @@ def is_primitive_mod_n(a: int, n: int, factors: list[tuple[int, int]] | None = N
             return False
     return True
 
-def is_lambda_primitive_mod_n(a: int, n: int, factors: list[tuple[int, int]] | None = None, carmichael_factors: list[tuple[int, int]] | None = None) -> bool:
+def is_lambda_primitive_mod_n(a: int, n: int, modulo_factors: Optional[Factors] = None, carmichael_factors: Optional[Factors] = None) -> bool:
     '''
     Checks whether `a` is a primitive lambda root modulo `n` aka. `a` has order `carmichael_lambda(n).
 
@@ -194,9 +253,11 @@ def is_lambda_primitive_mod_n(a: int, n: int, factors: list[tuple[int, int]] | N
     '''
     
     assert is_in_mult_group(a, n)
-    if factors == None:
-        factors = get_factors(n)
-    biggest_order = carmichael_lambda(n, factors)
+
+    if modulo_factors == None:
+        modulo_factors = get_factors(n)
+
+    biggest_order = carmichael_lambda(n, modulo_factors)
     if carmichael_factors == None:
         carmichael_factors = get_factors(biggest_order)
     
@@ -207,7 +268,7 @@ def is_lambda_primitive_mod_n(a: int, n: int, factors: list[tuple[int, int]] | N
     
 
 
-def baby_step_giant_step(input: int, generator: int, modulo: int, order: int) -> int:
+def baby_step_giant_step(input: int, generator: int, modulo: int, order: int) -> Optional[int]:
     '''
     Implementation of baby step giant step algorithm to calculate discrete log in time and space complexity `O(order)`.
 
@@ -225,8 +286,6 @@ def baby_step_giant_step(input: int, generator: int, modulo: int, order: int) ->
     >>> baby_step_giant_step(pow(7, 19, 23), 7, 23, 22)
     19
     '''
-    if order == None:
-        order = euler_phi(modulo)
     m = ceil(sqrt(order))
     generator_powers = { pow(generator, j, modulo):j for j in range(m) }
     gen_minus_m = pow(generator, -m, modulo)
@@ -238,17 +297,9 @@ def baby_step_giant_step(input: int, generator: int, modulo: int, order: int) ->
         else:
             result = i * m + j
             return result
+    return None # If no answer was found
 
-dlog = 19
-p = 23
-order = euler_phi(p)
-generator = 7
-input = pow(generator, dlog, p)
-
-assert baby_step_giant_step(input, generator, p, p-1) == dlog
-
-
-def pohlig_hellman_pk(input: int, generator: int, modulo: int, p: int, k: int) -> int:
+def pohlig_hellman_pk(input: int, generator: int, modulo: int, p: int, k: int) -> Optional[int]:
     '''
     Calculates the discrete logarithm of input aka. calculates x in generator**x = input mod modulo when the order of the group is some prime p raised to the power of some k.
 
@@ -268,11 +319,13 @@ def pohlig_hellman_pk(input: int, generator: int, modulo: int, p: int, k: int) -
 
     x = 0
     gamma = pow(generator, p**(k-1), modulo)
-    h = None
-    d = None
+    h: int = 0
+    d: int = 0
     for i in range(k):
         h = pow(pow(generator, -x, modulo) * input, p**(k-1-i), modulo)
-        d = baby_step_giant_step(h, gamma, modulo, p)
+        match baby_step_giant_step(h, gamma, modulo, p):
+            case None: return None
+            case a: d = a
         x = (x + d * p**i)
     return x
 
@@ -320,7 +373,7 @@ def chinese_remainder_theorem(congruences: Iterable[tuple[int, int]]) -> int:
     return x
 
 
-def pohlig_hellman(input: int, generator: int, modulo: int, order: int, prime_factorization: list[tuple[int, int]]| None = None) -> int:
+def pohlig_hellman(input: int, generator: int, modulo: int, order: int, order_factorization: Optional[Factors] = None) -> Optional[int]:
     '''
     The silver-pohlig-hellman algorithm for calculating discrete logs of cyclic groups of order `order` generated by `generator` aka. calculates the solution `x` to the equation `generator**x = input mod modulo`.
 
@@ -330,7 +383,7 @@ def pohlig_hellman(input: int, generator: int, modulo: int, order: int, prime_fa
         `generator` (int): the base of the logarithm and the generator of the cyclic group. Order of `generator` is `order`.
         `modulo` (int): the modulus defining the multiplicative group we work in aka. (Z_`modulo`)*
         `order` (int): the order of `generator`
-        `prime_factorization` (optional, [(int, int)]): the prime_factorization of `order`. If one already knows the prime factorization, one can input them to this optional argument.
+        `order_factorization` (optional, [(int, int)]): the prime_factorization of `order`. If one already knows the prime factorization, one can input them to this optional argument.
 
     >>> pohlig_hellman(pow(8, 18, 7**4), 8, 7**4, 7**3 ,[(7, 3)])
     18
@@ -338,17 +391,19 @@ def pohlig_hellman(input: int, generator: int, modulo: int, order: int, prime_fa
     30
     '''
     
-    if prime_factorization == None:
-        prime_factorization = get_factors(order)
+    if order_factorization == None:
+        order_factorization = get_factors(order)
     # The round generator, round dlog arg and round dlog, placeholder values
     gi: int = 0
     hi: int = 0
     xi: int = 0
     prime_solutions: list[tuple[int, tuple[int, int]]] = []
-    for (p, e) in prime_factorization:
+    for (p, e) in order_factorization:
         gi = pow(generator, order // (p**e), modulo)
         hi = pow(input, order // (p**e), modulo)
-        xi = pohlig_hellman_pk(hi, gi, modulo, p, e)
+        match pohlig_hellman_pk(hi, gi, modulo, p, e):
+            case None: return None
+            case a: xi = a
         prime_solutions.append((xi, (p, e)))
     cong: map[tuple[int, int]] = map(lambda t: (t[0], pow(t[1][0], t[1][1])), prime_solutions)
     return chinese_remainder_theorem(cong)
